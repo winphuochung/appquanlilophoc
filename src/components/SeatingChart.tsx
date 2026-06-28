@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Student, Grade, Seat } from '../types';
+import { generateGeminiContent } from '../gemini';
 import { Users, Trash2, ArrowLeftRight, HelpCircle, Sparkles, AlertCircle, RefreshCw, Layers } from 'lucide-react';
 
 interface SeatingChartProps {
@@ -55,35 +56,16 @@ export default function SeatingChart({ students, grades, seats, onUpdateSeats }:
     setIsAssigning(true);
   };
 
-  // Trigger Gemini Seating Optimization Analysis
   const runAiOptimization = async () => {
     setLoadingAi(true);
     setAiAnalysis('');
 
-    const savedKey = localStorage.getItem('gemini_api_key') || '';
-    const savedModel = localStorage.getItem('gemini_model') || 'gemini-3-flash-preview';
-
     try {
-      const response = await fetch('/api/gemini/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: 'seating-optimization',
-          payload: { students, grades },
-          apiKey: savedKey,
-          model: savedModel
-        })
-      });
-
-      const data = await response.json();
-      if (response.ok) {
-        setAiAnalysis(data.text);
-      } else {
-        setAiAnalysis(`[API ERROR] ${data.error || 'Không thể lấy ý kiến từ trợ lý AI.'}`);
-      }
+      const text = await generateGeminiContent('seating-optimization', { students, grades });
+      setAiAnalysis(text);
     } catch (err: any) {
       console.error(err);
-      setAiAnalysis(`[API ERROR] Lỗi kết nối đến máy chủ AI: ${err.message || err}`);
+      setAiAnalysis(`[API ERROR] ${err.message || err}`);
     } finally {
       setLoadingAi(false);
     }
