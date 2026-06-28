@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Student } from '../types';
+import { generateGeminiContent } from '../gemini';
 import {
   Database,
   Link2,
@@ -295,32 +296,14 @@ export default function GoogleSheetsSync({
 
   const parseTextWithAI = async (rawText: string) => {
     if (!rawText.trim()) {
-      setError('Văn bản trống hoặc không đọc được.');
+      setError('Vui lòng nhập danh sách học sinh.');
       setLoading(false);
       return;
     }
-    
-    const savedKey = localStorage.getItem('gemini_api_key') || '';
-    const savedModel = localStorage.getItem('gemini_model') || 'gemini-3-flash-preview';
 
     try {
-      const response = await fetch('/api/gemini/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: 'parse-student-text',
-          payload: { text: rawText.substring(0, 15000) },
-          apiKey: savedKey,
-          model: savedModel
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Lỗi từ API Gemini.');
-      }
-
-      const cleanJson = cleanJsonString(data.text);
+      const aiText = await generateGeminiContent('parse-student-text', { text: rawText.substring(0, 15000) });
+      const cleanJson = cleanJsonString(aiText);
       const list = JSON.parse(cleanJson);
       
       if (!Array.isArray(list)) {
