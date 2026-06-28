@@ -15,6 +15,27 @@ import {
   Sparkles
 } from 'lucide-react';
 
+// Dynamic Loader for mammoth (Word file extraction library)
+const loadMammoth = (): Promise<any> => {
+  return new Promise((resolve, reject) => {
+    if ((window as any).mammoth) {
+      resolve((window as any).mammoth);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js';
+    script.onload = () => {
+      resolve((window as any).mammoth);
+    };
+    script.onerror = (err) => reject(err);
+    document.body.appendChild(script);
+  });
+};
+
+const cleanJsonString = (str: string): string => {
+  return str.replace(/```json/g, '').replace(/```/g, '').trim();
+};
+
 interface GoogleSheetsSyncProps {
   isOpen: boolean;
   onClose: () => void;
@@ -39,11 +60,13 @@ export default function GoogleSheetsSync({
   onSyncComplete,
 }: GoogleSheetsSyncProps) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [importMethod, setImportMethod] = useState<'sheets' | 'file' | 'text'>('sheets');
   const [sheetUrl, setSheetUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [csvData, setCsvData] = useState<string[][]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
+  const [textareaText, setTextareaText] = useState('');
   
   // Mapping state: maps fields of Student interface to CSV column headers
   const [mapping, setMapping] = useState<Mapping>({
@@ -70,6 +93,8 @@ export default function GoogleSheetsSync({
       setCsvData([]);
       setHeaders([]);
       setParsedStudents([]);
+      setTextareaText('');
+      setImportMethod('sheets');
     }
   }, [isOpen]);
 
@@ -142,19 +167,40 @@ export default function GoogleSheetsSync({
     try {
       localStorage.setItem('google_sheet_url', sheetUrl.trim());
 
-      const response = await fetch('/api/google-sheets/fetch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: sheetUrl.trim() }),
-      });
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `Lỗi tải file (${response.status})`);
+      // Parse Google Sheets URL to export direct CSV link
+      let directUrl = sheetUrl.trim();
+      const match = directUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
+      if (match) {
+        const sheetId = match[1];
+        const gidMatch = directUrl.match(/gid=([0-9]+)/);
+        const gid = gidMatch ? gidMatch[1] : '0';
+        directUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
       }
 
-      const data = await response.json();
-      const csvText = data.csv;
+      let csvText = '';
+      try {
+        console.log(`[Google Sheets Client] Tải trực tiếp từ trình duyệt: ${directUrl}`);
+        const directResponse = await fetch(directUrl);
+        if (directResponse.ok) {
+          csvText = await directResponse.text();
+        } else {
+          throw new Error(`Mã lỗi HTTP: ${directResponse.status}`);
+        }
+      } catch (directErr) {
+        console.warn('Tải trực tiếp thất bại, thử qua proxy máy chủ...', directErr);
+        // Fallback to proxy route
+        const response = await fetch('/api/google-sheets/fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: sheetUrl.trim() }),
+        });
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error || `Lỗi tải file (${response.status})`);
+        }
+        const data = await response.json();
+        csvText = data.csv;
+      }
       
       if (!csvText || csvText.trim() === '') {
         throw new Error('Dữ liệu tải về trống.');
@@ -203,6 +249,116 @@ export default function GoogleSheetsSync({
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setLoading(true);
+    setError('');
+
+    try {
+      if (file.name.endsWith('.txt')) {
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          const text = evt.target?.result as string;
+          parseTextWithAI(text);
+        };
+        reader.readAsText(file);
+      } else if (file.name.endsWith('.docx')) {
+        const mammothLib = await loadMammoth();
+        const reader = new FileReader();
+        reader.onload = async (evt) => {
+          try {
+            const arrayBuffer = evt.target?.result as ArrayBuffer;
+            const result = await mammothLib.extractRawText({ arrayBuffer });
+            const text = result.value;
+            if (!text || text.trim() === '') {
+              throw new Error('Không trích xuất được văn bản từ file Word.');
+            }
+            parseTextWithAI(text);
+          } catch (mammothErr: any) {
+            setError(`Lỗi đọc file Word: ${mammothErr.message}`);
+            setLoading(false);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      } else {
+        throw new Error('Định dạng tệp không được hỗ trợ. Vui lòng tải lên file .docx hoặc .txt.');
+      }
+    } catch (err: any) {
+      setError(err.message);
+      setLoading(false);
+    }
+  };
+
+  const parseTextWithAI = async (rawText: string) => {
+    if (!rawText.trim()) {
+      setError('Văn bản trống hoặc không đọc được.');
+      setLoading(false);
+      return;
+    }
+    
+    const savedKey = localStorage.getItem('gemini_api_key') || '';
+    const savedModel = localStorage.getItem('gemini_model') || 'gemini-3-flash-preview';
+
+    try {
+      const response = await fetch('/api/gemini/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task: 'parse-student-text',
+          payload: { text: rawText.substring(0, 15000) },
+          apiKey: savedKey,
+          model: savedModel
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Lỗi từ API Gemini.');
+      }
+
+      const cleanJson = cleanJsonString(data.text);
+      const list = JSON.parse(cleanJson);
+      
+      if (!Array.isArray(list)) {
+        throw new Error('Dữ liệu AI trả về không phải là mảng JSON học sinh.');
+      }
+
+      const studentsList: Student[] = list.map((item: any, index: number) => {
+        const idVal = item.id || `HS${String(index + 1).padStart(3, '0')}`;
+        return {
+          id: idVal,
+          studentId: idVal,
+          name: item.name || 'Không rõ họ tên',
+          gender: item.gender || 'Nam',
+          dob: item.dob || '2012-01-01',
+          parentName: item.parentName || 'Chưa cập nhật',
+          parentPhone: item.parentPhone || '0900000000',
+          email: item.email || `${idVal.toLowerCase()}@school.edu.vn`
+        };
+      });
+
+      setParsedStudents(studentsList);
+      setStep(3); // Skip step 2, go straight to preview
+    } catch (err: any) {
+      console.error(err);
+      setError(`Lỗi trích xuất AI: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTextareaParse = () => {
+    if (!textareaText.trim()) {
+      setError('Vui lòng dán danh sách học sinh vào ô văn bản.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    parseTextWithAI(textareaText);
   };
 
   const handleApplyMapping = () => {
@@ -307,8 +463,8 @@ export default function GoogleSheetsSync({
               <Database className="w-5 h-5 animate-pulse" />
             </div>
             <div>
-              <h3 className="font-bold text-base font-sans tracking-tight">Kết Nối Google Sheets</h3>
-              <p className="text-slate-300 text-[10px] font-mono mt-0.5 uppercase tracking-wider">Đồng bộ cơ sở dữ liệu học sinh trực tuyến</p>
+              <h3 className="font-bold text-base font-sans tracking-tight">Nhập Danh Sách Học Sinh</h3>
+              <p className="text-slate-300 text-[10px] font-mono mt-0.5 uppercase tracking-wider">Đồng bộ Google Sheets hoặc dùng AI đọc file Word/Text</p>
             </div>
           </div>
           <button
@@ -319,12 +475,42 @@ export default function GoogleSheetsSync({
           </button>
         </div>
 
+        {/* Method Tabs */}
+        {step === 1 && (
+          <div className="flex bg-slate-100 border-b border-slate-200 text-xs font-bold text-slate-500 flex-shrink-0">
+            <button
+              onClick={() => { setImportMethod('sheets'); setError(''); }}
+              className={`flex-1 py-3 text-center border-r border-slate-200 transition-all cursor-pointer ${
+                importMethod === 'sheets' ? 'bg-white text-indigo-600 border-b-2 border-b-indigo-600' : 'hover:bg-slate-50'
+              }`}
+            >
+              🔗 Link Google Sheets
+            </button>
+            <button
+              onClick={() => { setImportMethod('file'); setError(''); }}
+              className={`flex-1 py-3 text-center border-r border-slate-200 transition-all cursor-pointer ${
+                importMethod === 'file' ? 'bg-white text-indigo-600 border-b-2 border-b-indigo-600' : 'hover:bg-slate-50'
+              }`}
+            >
+              📄 Tải file Word / Text (AI)
+            </button>
+            <button
+              onClick={() => { setImportMethod('text'); setError(''); }}
+              className={`flex-1 py-3 text-center transition-all cursor-pointer ${
+                importMethod === 'text' ? 'bg-white text-indigo-600 border-b-2 border-b-indigo-600' : 'hover:bg-slate-50'
+              }`}
+            >
+              📋 Dán văn bản thô (AI)
+            </button>
+          </div>
+        )}
+
         {/* Steps Progress Indicator */}
         <div className="bg-slate-50 border-b border-slate-200 px-6 py-3.5 flex justify-between items-center text-xs flex-shrink-0">
           <div className="flex items-center gap-6 w-full justify-around font-bold">
             <span className={`flex items-center gap-2 ${step >= 1 ? 'text-indigo-600' : 'text-slate-400'}`}>
               <span className={`w-5 h-5 rounded-full flex items-center justify-center border text-[10px] ${step >= 1 ? 'bg-indigo-50 border-indigo-200' : 'border-slate-300'}`}>1</span>
-              Nhập Link Sheets
+              {importMethod === 'sheets' ? 'Nhập Link Sheets' : importMethod === 'file' ? 'Tải File Word/Text' : 'Dán Roster'}
             </span>
             <div className="h-px bg-slate-200 flex-1 mx-2"></div>
             <span className={`flex items-center gap-2 ${step >= 2 ? 'text-indigo-600' : 'text-slate-400'}`}>
@@ -349,47 +535,106 @@ export default function GoogleSheetsSync({
             </div>
           )}
 
-          {/* STEP 1: INPUT URL */}
+          {/* STEP 1: IMPORT OPTIONS */}
           {step === 1 && (
             <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="block text-xs font-bold text-slate-700">Liên kết trang tính Google Sheet của lớp học:</label>
-                <div className="relative">
-                  <Link2 className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="url"
-                    value={sheetUrl}
-                    onChange={(e) => setSheetUrl(e.target.value)}
-                    placeholder="https://docs.google.com/spreadsheets/d/.../edit"
-                    className="w-full text-xs pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all font-mono"
-                  />
+              {importMethod === 'sheets' && (
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-700">Liên kết trang tính Google Sheet của lớp học:</label>
+                    <div className="relative">
+                      <Link2 className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="url"
+                        value={sheetUrl}
+                        onChange={(e) => setSheetUrl(e.target.value)}
+                        placeholder="https://docs.google.com/spreadsheets/d/.../edit"
+                        className="w-full text-xs pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Instructions */}
+                  <div className="bg-indigo-50/50 rounded-xl p-4.5 border border-indigo-100/50 space-y-3">
+                    <h4 className="text-xs font-bold text-indigo-950 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-indigo-500" />
+                      Hướng dẫn cấu hình chia sẻ Google Sheet:
+                    </h4>
+                    <ol className="text-xs text-indigo-900/80 list-decimal list-inside space-y-2 pl-1 leading-relaxed">
+                      <li>Mở bảng tính Google Sheet chứa danh sách lớp học của bạn.</li>
+                      <li>
+                        Nhấn nút <strong>Chia sẻ (Share)</strong> ở góc trên bên phải, thiết lập quyền truy cập thành 
+                        <span className="text-indigo-600 font-bold"> "Bất kỳ ai có liên kết đều có thể xem" (Anyone with the link can view)</span>.
+                      </li>
+                      <li>Copy đường dẫn của trình duyệt dán vào ô bên trên.</li>
+                      <li>
+                        <em>Hoặc thay thế:</em> Chọn <strong>Tệp &gt; Chia sẻ &gt; Công bố lên web</strong>. Chọn định dạng xuất bản là 
+                        <strong> Giá trị phân tách bằng dấu phẩy (.csv)</strong>, bấm Công bố và copy liên kết đó dán vào đây.
+                      </li>
+                    </ol>
+                  </div>
+
+                  {/* Requirements */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-[11px] text-slate-500">
+                    💡 <strong>Yêu cầu cấu trúc cột trong bảng tính:</strong> Bảng tính nên có dòng đầu tiên làm tiêu đề. Hệ thống sẽ tự động đối chiếu các tiêu đề như: <em>Mã HS, Họ tên, Giới tính, Ngày sinh, Tên phụ huynh, SĐT...</em> để ánh xạ.
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {/* Instructions */}
-              <div className="bg-indigo-50/50 rounded-xl p-4.5 border border-indigo-100/50 space-y-3">
-                <h4 className="text-xs font-bold text-indigo-950 flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-indigo-500" />
-                  Hướng dẫn cấu hình chia sẻ Google Sheet:
-                </h4>
-                <ol className="text-xs text-indigo-900/80 list-decimal list-inside space-y-2 pl-1 leading-relaxed">
-                  <li>Mở bảng tính Google Sheet chứa danh sách lớp học của bạn.</li>
-                  <li>
-                    Nhấn nút <strong>Chia sẻ (Share)</strong> ở góc trên bên phải, thiết lập quyền truy cập thành 
-                    <span className="text-indigo-600 font-bold"> "Bất kỳ ai có liên kết đều có thể xem" (Anyone with the link can view)</span>.
-                  </li>
-                  <li>Copy đường dẫn của trình duyệt dán vào ô bên trên.</li>
-                  <li>
-                    <em>Hoặc thay thế:</em> Chọn <strong>Tệp &gt; Chia sẻ &gt; Công bố lên web</strong>. Chọn định dạng xuất bản là 
-                    <strong> Giá trị phân tách bằng dấu phẩy (.csv)</strong>, bấm Công bố và copy liên kết đó dán vào đây.
-                  </li>
-                </ol>
-              </div>
+              {importMethod === 'file' && (
+                <div className="space-y-4">
+                  <div className="border-2 border-dashed border-slate-300 hover:border-indigo-400 rounded-xl p-8 text-center transition-all bg-slate-50 relative cursor-pointer">
+                    <input
+                      type="file"
+                      accept=".docx,.txt"
+                      onChange={handleFileUpload}
+                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                      disabled={loading}
+                    />
+                    <div className="space-y-3">
+                      <div className="p-3 bg-indigo-50 border border-indigo-100 text-indigo-600 rounded-full w-12 h-12 flex items-center justify-center mx-auto">
+                        {loading ? <RefreshCw className="w-6 h-6 animate-spin" /> : <FileSpreadsheet className="w-6 h-6" />}
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-800">Tải lên file danh sách lớp học</h4>
+                        <p className="text-[10px] text-slate-400 mt-1">Chấp nhận định dạng file Word (.docx) hoặc file văn bản (.txt)</p>
+                      </div>
+                      <div className="inline-block bg-indigo-600 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg shadow-sm hover:bg-indigo-500">
+                        Chọn tệp từ thiết bị
+                      </div>
+                    </div>
+                  </div>
 
-              {/* Requirements */}
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-[11px] text-slate-500">
-                💡 <strong>Yêu cầu cấu trúc cột trong bảng tính:</strong> Bảng tính nên có dòng đầu tiên làm tiêu đề. Hệ thống sẽ tự động đối chiếu các tiêu đề như: <em>Mã HS, Họ tên, Giới tính, Ngày sinh, Tên phụ huynh, SĐT...</em> để ánh xạ.
-              </div>
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-2">
+                    <h5 className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-amber-500 animate-pulse" />
+                      Cơ chế hoạt động của Trí Tuệ Nhân Tạo AI:
+                    </h5>
+                    <p className="text-[10px] text-amber-800 leading-relaxed">
+                      Hệ thống tích hợp AI sẽ tự động đọc toàn bộ văn bản trong file Word của bạn, tự động trích xuất các trường thông tin học sinh (Họ tên, Giới tính, Ngày sinh, SĐT...) và thiết lập danh sách lớp chỉ trong vài giây. Bạn không cần phải định dạng lại file phức tạp!
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {importMethod === 'text' && (
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-700">Sao chép & dán danh sách học sinh thô của bạn tại đây:</label>
+                    <textarea
+                      value={textareaText}
+                      onChange={(e) => setTextareaText(e.target.value)}
+                      placeholder="Ví dụ:&#10;1. Nguyễn Văn A - Nam - 15/05/2012 - Phụ huynh: Nguyễn Văn B (SĐT: 0912345678)&#10;2. Lê Thị B - Nữ - Ngày sinh: 20/10/2012 - Mẹ: Lê Thị C (SĐT: 0987654321)..."
+                      className="w-full h-44 text-xs p-3 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all font-sans leading-relaxed scrollbar-thin"
+                      disabled={loading}
+                    ></textarea>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-[10px] text-slate-500 leading-relaxed">
+                    💡 <strong>Mẹo nhỏ:</strong> Bạn có thể copy bất kỳ văn bản danh sách nào từ Email, trang web, file Excel thô hoặc tin nhắn Zalo, dán vào đây và nhấn <strong>"DÙNG AI TRÍCH XUẤT"</strong>. Trợ lý AI sẽ tự động dọn dẹp và chuẩn hóa dữ liệu học sinh giúp bạn.
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -637,7 +882,7 @@ export default function GoogleSheetsSync({
               HỦY
             </button>
             
-            {step === 1 && (
+            {step === 1 && importMethod === 'sheets' && (
               <button
                 type="button"
                 disabled={loading}
@@ -646,6 +891,18 @@ export default function GoogleSheetsSync({
               >
                 {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
                 TẢI DỮ LIỆU
+              </button>
+            )}
+
+            {step === 1 && importMethod === 'text' && (
+              <button
+                type="button"
+                disabled={loading}
+                onClick={handleTextareaParse}
+                className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold px-4 py-2 rounded-lg shadow-sm transition-colors flex items-center gap-2 cursor-pointer"
+              >
+                {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-amber-300" />}
+                DÙNG AI TRÍCH XUẤT
               </button>
             )}
 
