@@ -72,6 +72,9 @@ app.post('/api/gemini/analyze', async (req, res) => {
     } else if (task === 'lesson-activities') {
       systemInstruction = 'Bạn là chuyên gia thiết kế bài giảng (Instructional Designer). Hãy gợi ý các hoạt động học tập tương tác sáng tạo, áp dụng các phương pháp hiện đại như trạm, dự án, trò chơi hóa (gamification), thảo luận nhóm.';
       prompt = `Hãy thiết kế hoạt động giảng dạy cho bài học sau:\n- Tiêu đề: ${payload.title}\n- Môn học: ${payload.subject}\n- Mục tiêu: ${payload.objective}\n- Tổng thời lượng: ${payload.duration} phút\n\nHãy đề xuất 3 hoạt động bổ trợ tương tác sáng tạo nhất, bao gồm tên hoạt động, mục đích sư phạm, thời lượng chi tiết và các bước thực hiện cụ thể.`;
+    } else if (task === 'parse-student-text') {
+      systemInstruction = 'Bạn là trợ lý AI xử lý dữ liệu học đường. Hãy trích xuất danh sách học sinh từ văn bản thô được cung cấp thành một mảng JSON học sinh hợp lệ. Mỗi học sinh có các trường: id (tự sinh dạng HS001, HS002...), name (Họ tên đầy đủ), gender (Giới tính: Nam hoặc Nữ), dob (Ngày sinh dạng YYYY-MM-DD, nếu không có hãy để trống), parentName (Tên phụ huynh, nếu không có hãy để trống), parentPhone (Số điện thoại phụ huynh, nếu không có hãy để trống), email (Email học sinh hoặc tự sinh theo dạng mã học sinh viết thường @school.edu.vn). Hãy trả về duy nhất chuỗi mảng JSON hợp lệ, bắt đầu bằng [ và kết thúc bằng ], không bao gồm các ký tự markdown ```json hay văn bản giải thích nào khác.';
+      prompt = `Hãy trích xuất danh sách học sinh từ đoạn văn bản thô sau đây và chuyển đổi thành mảng JSON học sinh:\n\n${payload.text}`;
     } else {
       prompt = payload.prompt || 'Xin chào';
     }
@@ -239,6 +242,13 @@ Nhằm tối ưu hóa mục tiêu bài giảng giúp học sinh ghi nhớ sâu v
     1.  Mỗi nhóm học sinh thiết kế một sơ đồ ứng dụng hoặc giải pháp cụ thể (Ví dụ: Vẽ tranh phân chia khẩu phần ăn gia đình ứng dụng phân số; viết một bức thư ngắn có các đại từ nhân xưng chuẩn xác).
     2.  Đại diện nhóm treo sản phẩm lên bảng phụ để triển lãm phòng tranh (Gallery Walk).
     3.  Cả lớp bình chọn chéo sản phẩm yêu thích nhất bằng sticker điểm cộng hành vi.`;
+  } else if (task === 'parse-student-text') {
+    return `[
+      { "id": "HS001", "name": "Nguyễn Minh Triết", "gender": "Nam", "dob": "2012-05-15", "parentName": "Nguyễn Văn Triết", "parentPhone": "0912345678", "email": "hs001@school.edu.vn" },
+      { "id": "HS002", "name": "Lê Thị Mai Anh", "gender": "Nữ", "dob": "2012-08-20", "parentName": "Lê Văn Anh", "parentPhone": "0987654321", "email": "hs002@school.edu.vn" },
+      { "id": "HS003", "name": "Phan Bảo Lâm", "gender": "Nam", "dob": "2012-02-10", "parentName": "Phan Văn Lâm", "parentPhone": "0905123456", "email": "hs003@school.edu.vn" },
+      { "id": "HS004", "name": "Đặng Hồng Nhung", "gender": "Nữ", "dob": "2012-11-05", "parentName": "Đặng Văn Nhung", "parentPhone": "0912000111", "email": "hs004@school.edu.vn" }
+    ]`;
   }
   return 'Phản hồi mô phỏng mặc định từ hệ thống QUẢN LÍ LỚP HỌC 9A1-SWIN.';
 }
