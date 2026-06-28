@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Student, Grade, BehaviorLog, LessonPlan } from '../types';
+import { generateGeminiContent } from '../gemini';
 import { Sparkles, Send, BrainCircuit, UserCheck, BookOpen, AlertCircle, Copy, Check, Flame, FileSpreadsheet } from 'lucide-react';
 
 // Dynamic Loader for pptxgenjs library
@@ -203,30 +204,12 @@ export default function AIWorkspace({ students, grades, behaviors, lessonPlans }
     setReportResult('');
 
     const metrics = getStudentMetrics(selectedStudentId);
-    const savedKey = localStorage.getItem('gemini_api_key') || '';
-    const savedModel = localStorage.getItem('gemini_model') || 'gemini-3-flash-preview';
-
     try {
-      const response = await fetch('/api/gemini/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: 'student-report',
-          payload: metrics,
-          apiKey: savedKey,
-          model: savedModel
-        })
-      });
-
-      const data = await response.json();
-      if (response.ok) {
-        setReportResult(data.text);
-      } else {
-        setReportResult(`[API ERROR] ${data.error || 'Lỗi xử lý API Gemini.'}`);
-      }
+      const text = await generateGeminiContent('student-report', metrics);
+      setReportResult(text);
     } catch (err: any) {
       console.error(err);
-      setReportResult(`[API ERROR] Lỗi kết nối API máy chủ: ${err.message || err}`);
+      setReportResult(`[API ERROR] ${err.message || err}`);
     } finally {
       setLoadingReport(false);
     }
@@ -255,30 +238,12 @@ export default function AIWorkspace({ students, grades, behaviors, lessonPlans }
     setLoadingActivities(true);
     setActivitiesResult('');
 
-    const savedKey = localStorage.getItem('gemini_api_key') || '';
-    const savedModel = localStorage.getItem('gemini_model') || 'gemini-3-flash-preview';
-
     try {
-      const response = await fetch('/api/gemini/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: 'lesson-activities',
-          payload: { title, subject, objective, duration },
-          apiKey: savedKey,
-          model: savedModel
-        })
-      });
-
-      const data = await response.json();
-      if (response.ok) {
-        setActivitiesResult(data.text);
-      } else {
-        setActivitiesResult(`[API ERROR] ${data.error || 'Lỗi xử lý API Gemini.'}`);
-      }
+      const text = await generateGeminiContent('lesson-activities', { title, subject, objective, duration });
+      setActivitiesResult(text);
     } catch (err: any) {
       console.error(err);
-      setActivitiesResult(`[API ERROR] Lỗi kết nối máy chủ: ${err.message || err}`);
+      setActivitiesResult(`[API ERROR] ${err.message || err}`);
     } finally {
       setLoadingActivities(false);
     }
@@ -293,30 +258,12 @@ export default function AIWorkspace({ students, grades, behaviors, lessonPlans }
     setChatInput('');
     setLoadingChat(true);
 
-    const savedKey = localStorage.getItem('gemini_api_key') || '';
-    const savedModel = localStorage.getItem('gemini_model') || 'gemini-3-flash-preview';
-
     try {
-      const response = await fetch('/api/gemini/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: 'general-chat',
-          payload: { prompt: userMsg },
-          apiKey: savedKey,
-          model: savedModel
-        })
-      });
-
-      const data = await response.json();
-      if (response.ok) {
-        setChatMessages(prev => [...prev, { sender: 'ai', text: data.text }]);
-      } else {
-        setChatMessages(prev => [...prev, { sender: 'ai', text: `[API ERROR] ${data.error || 'Không thể lấy câu trả lời tư vấn.'}` }]);
-      }
+      const text = await generateGeminiContent('general-chat', { prompt: userMsg });
+      setChatMessages(prev => [...prev, { sender: 'ai', text }]);
     } catch (err: any) {
       console.error(err);
-      setChatMessages(prev => [...prev, { sender: 'ai', text: `[API ERROR] Lỗi kết nối: ${err.message || err}` }]);
+      setChatMessages(prev => [...prev, { sender: 'ai', text: `[API ERROR] ${err.message || err}` }]);
     } finally {
       setLoadingChat(false);
     }
